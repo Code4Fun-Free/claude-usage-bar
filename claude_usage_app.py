@@ -236,13 +236,30 @@ def run_tray():
 
     # abs: kiểu giờ reset · logging_in: cửa sổ đăng nhập đang mở (tạm dừng tự làm mới)
     # widget_on: widget nổi ở góc trái taskbar (xem claude_usage_widget.py), nhớ qua config.json
-    state = {"good": None, "note": "", "abs": False, "logging_in": False,
+    state = {"good": None, "note": "", "abs": False, "logging_in": False, "running": True,
              "widget_on": bool(core.get_setting("widget", False)), "widget": None,
              # điểm neo của widget: bottom-left | bottom-right | top-left | top-right | free
              # chưa chọn bao giờ: ai đã tự kéo widget từ trước (có widget_pos) giữ chế độ tự do
              "anchor": (lambda a: a if a in ANCHOR_KEYS else "bottom-left")(
                  core.get_setting("widget_anchor")
                  or ("free" if core.get_setting("widget_pos") else "bottom-left"))}
+
+    def quit_app(*_args):
+        """Thoát ứng dụng sạch sẽ, đóng toàn bộ widget và tiến trình không để bị Not Responding."""
+        state["running"] = False
+        if state["widget"] is not None:
+            try:
+                state["widget"].stop()
+            except Exception:
+                pass
+        try:
+            icon.stop()
+        except Exception:
+            pass
+        def force_exit():
+            time.sleep(0.2)
+            os._exit(0)
+        threading.Thread(target=force_exit, daemon=True).start()
 
     def _reset_str(g, which):
         key = f"{which}_reset_abs" if state["abs"] else f"{which}_reset"
@@ -290,7 +307,7 @@ def run_tray():
                 on_session_key=_in_thread(prompt_session_key),
                 on_autostart_toggle=lambda: (core.toggle_startup(), refresh(skip_fetch=True)),
                 autostart_status=core.get_startup_status,
-                on_quit=lambda: icon.stop(),
+                on_quit=quit_app,
                 on_hide=lambda: set_widget(False),  # "Ẩn widget" ở panel / menu chuột phải
                 on_move=lambda xy: core.update_config(widget_pos=list(xy)),
                 on_anchor=lambda a: set_anchor(a, from_widget=True),  # chọn trong menu của widget
@@ -420,23 +437,26 @@ def run_tray():
             pystray.MenuItem("Nhập sessionKey…",
                              lambda i, it: threading.Thread(target=prompt_session_key,
                                                             daemon=True).start()),
-            pystray.MenuItem("Thoát", lambda i, it: i.stop()),
+            pystray.MenuItem("Thoát", quit_app),
         )
 
     def loop():
         import time
         last_theme = _is_light_theme()
-        while True:
+        while state["running"]:
             try:
                 # Kiểm tra theme thay đổi mỗi giây để đổi màu icon khay hệ thống tức thì
                 for _ in range(POLL_SECONDS):
+                    if not state["running"]:
+                        return
                     time.sleep(1)
                     cur_theme = _is_light_theme()
                     if cur_theme != last_theme:
                         last_theme = cur_theme
                         pct = state["good"]["five"] if state["good"] else None
                         icon.icon = _make_image(pct, light=cur_theme)
-                refresh()
+                if state["running"]:
+                    refresh()
             except Exception:
                 time.sleep(POLL_SECONDS)
 
@@ -447,6 +467,8 @@ def run_tray():
 
     threading.Thread(target=loop, daemon=True).start()
     icon.run()
+    quit_app()
+    os._exit(0)
 
 
 # ============================================================================ ==
