@@ -23,7 +23,14 @@
       "key": "poll_seconds",
       "label": "Tần số kiểm tra token (giây)",
       "type": "select",
-      "options": [15, 30, 45, 60, 120, 300],
+      "options": [
+        15,
+        30,
+        45,
+        60,
+        120,
+        300
+      ],
       "default": 30
     },
     {
@@ -42,5 +49,6 @@
       "max": 99,
       "default": 90
     }
-  ]
+  ],
+  "github_url": "https://github.com/TheGiang/claude-usage-bar"
 }
