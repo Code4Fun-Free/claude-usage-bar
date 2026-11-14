@@ -25,13 +25,16 @@ import threading
 import time
 import webbrowser
 
+import ui_kit as ui
+
 USAGE_URL = "https://claude.ai/settings/usage"
 
 # ----------------------------------------------------------------------------- kích thước ----
-CW, CH = 258, 44          # widget gọn (px logic; nhân tỉ lệ DPI khi vẽ)
-FW, FH = 296, 372         # panel mở rộng (không tính vùng đổ bóng)
-FM = 14                   # lề quanh panel cho bóng đổ
-SS_COMPACT, SS_FLYOUT = 3, 2   # siêu lấy mẫu: vẽ gấp N lần rồi thu nhỏ cho nét mịn
+CW, CH = ui.CW_HORIZONTAL, ui.CH_TASKBAR   # widget gọn (236x40 px logic)
+FW, FH = ui.FW_PANEL, 356                 # panel mở rộng (328x320 px logic)
+FM = ui.FM_SHADOW                         # lề quanh panel cho bóng đổ (14 px)
+SS_COMPACT, SS_FLYOUT = ui.SS_COMPACT, ui.SS_FLYOUT   # siêu lấy mẫu
+MENU_FONT = ui.MENU_FONT
 TICK_MS = 400
 CLICK_SLOP = 4            # kéo quá số px này thì coi là kéo thả, không phải bấm
 
@@ -42,28 +45,28 @@ DANGER_AT = 90
 # ------------------------------------------------------------------------------- màu sắc ----
 # Bảng màu tối (Dark Theme)
 DARK_THEME = {
-    "ink": (255, 255, 255),
-    "label": (203, 213, 225),
-    "track": (255, 255, 255),
-    "track_a": 42,
-    "divider": (255, 255, 255),
-    "divider_a": 46,
-    "chevron": (203, 213, 225),
+    "ink": ui.THEME_DARK["text_main"],
+    "label": ui.THEME_DARK["text_muted"],
+    "track": ui.THEME_DARK["track"],
+    "track_a": ui.THEME_DARK["track_alpha"],
+    "divider": ui.THEME_DARK["divider"],
+    "divider_a": ui.THEME_DARK["divider_alpha"],
+    "chevron": ui.THEME_DARK["text_muted"],
     "spark": (96, 165, 250),
     "spark_panel": (88, 196, 230),
-    "cal_ok": (52, 211, 153),
-    "cal_danger": (248, 113, 113),
-    "yellow": (245, 184, 46),
-    "red": (255, 90, 106),
+    "cal_ok": ui.COLOR_OK,
+    "cal_danger": ui.COLOR_DANGER,
+    "yellow": ui.COLOR_WARN,
+    "red": ui.COLOR_DANGER,
     "bar_session": ((56, 189, 248), (59, 130, 246)),
     "bar_week": ((52, 224, 170), (16, 185, 129)),
-    "panel_fill": (20, 44, 56),
-    "panel_alpha": 246,
-    "panel_border": (150, 200, 215),
-    "panel_border_a": 62,
-    "panel_shadow_fill": 120,
-    "panel_muted": (165, 186, 196),
-    "hover_fill": (255, 255, 255, 24),
+    "panel_fill": ui.THEME_DARK["bg_panel"],
+    "panel_alpha": ui.THEME_DARK["panel_alpha"],
+    "panel_border": ui.THEME_DARK["border_panel"],
+    "panel_border_a": ui.THEME_DARK["border_alpha"],
+    "panel_shadow_fill": ui.THEME_DARK["shadow_fill"],
+    "panel_muted": ui.THEME_DARK["text_muted"],
+    "hover_fill": ui.THEME_DARK["hover_bg"],
 }
 
 # Bảng màu sáng (Light Theme) - tinh chỉnh độ tương phản cao chống mờ trên nền sáng
@@ -134,215 +137,48 @@ def _pct_text(p):
 
 
 # --------------------------------------------------------------------------------- bộ vẽ ----
-def _font(px, weight="regular"):
-    from PIL import ImageFont
-    names = {"semibold": ("seguisb.ttf", "segoeuib.ttf", "arialbd.ttf", "DejaVuSans-Bold.ttf"),
-             "regular": ("segoeui.ttf", "arial.ttf", "DejaVuSans.ttf")}[weight]
-    for n in names:
-        try:
-            return ImageFont.truetype(n, max(1, round(px)))
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-
-class _Painter:
-    """
-    Vẽ lên ảnh RGBA nền trong suốt, toạ độ theo px logic. Mỗi thao tác vẽ vào một mặt nạ 'L'
-    nhỏ (chỉ trong khung bao của nó) rồi tô màu qua mặt nạ -> alpha thẳng, không viền đen.
-    """
-
-    def __init__(self, w, h, scale, ss, margin=0):
-        from PIL import Image
-        self.scale, self.ss, self.dx = scale, ss, margin
-        self.u = scale * ss
-        self.W = round((w + 2 * margin) * self.u)
-        self.H = round((h + 2 * margin) * self.u)
-        self.out = (round((w + 2 * margin) * scale), round((h + 2 * margin) * scale))
-        self.img = Image.new("RGBA", (self.W, self.H), (0, 0, 0, 0))
-
-    def _bbox(self, x0, y0, x1, y1, pad=2):
-        u, d = self.u, self.dx
-        return (max(0, math.floor((x0 + d) * u) - pad), max(0, math.floor((y0 + d) * u) - pad),
-                min(self.W, math.ceil((x1 + d) * u) + pad), min(self.H, math.ceil((y1 + d) * u) + pad))
-
-    def shape(self, bbox, draw, color, alpha=255, gradient=None):
-        """draw(d, T): T(x, y) đổi toạ độ logic -> px cục bộ của mặt nạ."""
-        from PIL import Image, ImageDraw
-        x0, y0, x1, y1 = self._bbox(*bbox)
-        w, h = x1 - x0, y1 - y0
-        if w <= 0 or h <= 0:
-            return
-        u, d0 = self.u, self.dx
-        mask = Image.new("L", (w, h), 0)
-        draw(ImageDraw.Draw(mask), lambda x, y: ((x + d0) * u - x0, (y + d0) * u - y0))
-        if alpha < 255:
-            mask = mask.point(lambda v, a=alpha: v * a // 255)
-        if gradient:
-            c1, c2 = gradient
-            g = Image.new("RGB", (w, 1))
-            for i in range(w):
-                t = i / max(1, w - 1)
-                g.putpixel((i, 0), tuple(round(c1[k] + (c2[k] - c1[k]) * t) for k in range(3)))
-            layer = g.resize((w, h)).convert("RGBA")
-        else:
-            layer = Image.new("RGBA", (w, h), tuple(color) + (255,))
-        layer.putalpha(mask)
-        region = self.img.crop((x0, y0, x1, y1))
-        self.img.paste(Image.alpha_composite(region, layer), (x0, y0))
-
-    # ---- hình cơ bản -------------------------------------------------------------------
-    def rrect(self, x0, y0, x1, y1, r, color, alpha=255, gradient=None):
-        u = self.u
-        self.shape((x0, y0, x1, y1),
-                   lambda d, T: d.rounded_rectangle([T(x0, y0), T(x1, y1)], radius=r * u, fill=255),
-                   color, alpha, gradient)
-
-    def ring(self, x0, y0, x1, y1, r, color, width, alpha=255):
-        u = self.u
-        self.shape((x0, y0, x1, y1),
-                   lambda d, T: d.rounded_rectangle([T(x0, y0), T(x1, y1)], radius=r * u,
-                                                    outline=255, width=max(1, round(width * u))),
-                   color, alpha)
-
-    def line(self, pts, color, width, alpha=255):
-        u = self.u
-        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        self.shape((min(xs) - width, min(ys) - width, max(xs) + width, max(ys) + width),
-                   lambda d, T: d.line([T(*p) for p in pts], fill=255,
-                                       width=max(1, round(width * u)), joint="curve"),
-                   color, alpha)
-
-    def polygon(self, pts, color, alpha=255):
-        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        self.shape((min(xs), min(ys), max(xs), max(ys)),
-                   lambda d, T: d.polygon([T(*p) for p in pts], fill=255), color, alpha)
-
-    def text(self, x, y, s, font, color, alpha=255, anchor="ls"):
-        from PIL import Image, ImageDraw
-        u, d0 = self.u, self.dx
-        px, py = (x + d0) * u, (y + d0) * u
-        l, t, r, b = font.getbbox(s, anchor=anchor)
-        x0, y0 = max(0, math.floor(px + l) - 2), max(0, math.floor(py + t) - 2)
-        x1, y1 = min(self.W, math.ceil(px + r) + 2), min(self.H, math.ceil(py + b) + 2)
-        if x1 <= x0 or y1 <= y0:
-            return
-        mask = Image.new("L", (x1 - x0, y1 - y0), 0)
-        ImageDraw.Draw(mask).text((px - x0, py - y0), s, font=font, fill=255, anchor=anchor)
-        if alpha < 255:
-            mask = mask.point(lambda v, a=alpha: v * a // 255)
-        layer = Image.new("RGBA", mask.size, tuple(color) + (255,))
-        layer.putalpha(mask)
-        self.img.paste(Image.alpha_composite(self.img.crop((x0, y0, x1, y1)), layer), (x0, y0))
-
-    def text_width(self, s, font):
-        return font.getlength(s) / self.u
-
-    # ---- biểu tượng --------------------------------------------------------------------
-    def sparkle(self, cx, cy, r, color):
-        """Ngôi sao 4 cánh lõm."""
-        pts = []
-        for i in range(8):
-            a = math.radians(i * 45 - 90)
-            rr = r if i % 2 == 0 else r * 0.30
-            pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
-        self.polygon(pts, color)
-
-    def calendar(self, x, y, s, color):
-        lw = s * 0.09
-        top = y + s * 0.16
-        self.ring(x, top, x + s, y + s, s * 0.22, color, lw)
-        hy = top + s * 0.27
-        self.line([(x, hy), (x + s, hy)], color, lw)
-        for fx in (0.28, 0.66):
-            rx = x + s * fx
-            self.rrect(rx - lw / 2, y, rx + lw / 2, top + s * 0.14, lw / 2, color)
-        cell = s * 0.12
-        for r in range(3):
-            for c in range(3):
-                cx0, cy0 = x + s * (0.17 + 0.27 * c), hy + s * (0.13 + 0.20 * r)
-                self.rrect(cx0, cy0, cx0 + cell, cy0 + cell, 0, color)
-
-    def chevron(self, cx, cy, color, direction="down", size=4.5, width=1.5):
-        k = size
-        if direction == "down":
-            pts = [(cx - k, cy - k * 0.5), (cx, cy + k * 0.5), (cx + k, cy - k * 0.5)]
-        else:  # right
-            pts = [(cx - k * 0.5, cy - k), (cx + k * 0.5, cy), (cx - k * 0.5, cy + k)]
-        self.line(pts, color, width)
-
-    def refresh_icon(self, cx, cy, r, color, width=1.5):
-        u = self.u
-
-        def draw(d, T):
-            a, b = T(cx - r, cy - r), T(cx + r, cy + r)
-            d.arc([a, b], 25, 305, fill=255, width=max(1, round(width * u)))
-
-        self.shape((cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2), draw, color)
-        # đầu mũi tên ở cuối cung (305°), hướng theo tiếp tuyến chiều kim đồng hồ
-        ang = math.radians(305)
-        px, py = cx + r * math.cos(ang), cy + r * math.sin(ang)
-        tx, ty = -math.sin(ang), math.cos(ang)
-        nx, ny = -ty, tx
-        s = r * 0.62
-        self.polygon([(px + tx * s * 1.1, py + ty * s * 1.1),
-                      (px + nx * s * 0.8, py + ny * s * 0.8),
-                      (px - nx * s * 0.8, py - ny * s * 0.8)], color)
-
-    def gear(self, cx, cy, r, color):
-        u = self.u
-
-        def draw(d, T):
-            (x0, y0), (x1, y1) = T(cx - r * 0.60, cy - r * 0.60), T(cx + r * 0.60, cy + r * 0.60)
-            d.ellipse([x0, y0, x1, y1], fill=255)
-            for i in range(8):
-                a = math.radians(i * 45)
-                ca, sa = math.cos(a), math.sin(a)
-                w = r * 0.14
-                pts = [(cx + ca * r * 0.5 - sa * w, cy + sa * r * 0.5 + ca * w),
-                       (cx + ca * r - sa * w * 0.8, cy + sa * r + ca * w * 0.8),
-                       (cx + ca * r + sa * w * 0.8, cy + sa * r - ca * w * 0.8),
-                       (cx + ca * r * 0.5 + sa * w, cy + sa * r * 0.5 - ca * w)]
-                d.polygon([T(*p) for p in pts], fill=255)
-            (hx0, hy0), (hx1, hy1) = T(cx - r * 0.34, cy - r * 0.34), T(cx + r * 0.34, cy + r * 0.34)
-            d.ellipse([hx0, hy0, hx1, hy1], fill=0)
-
-        self.shape((cx - r, cy - r, cx + r, cy + r), draw, color)
-
-    def finish(self):
-        from PIL import Image
-        return self.img.resize(self.out, Image.LANCZOS)
+_font = ui.load_font
+_Painter = ui.BasePainter
 
 
 # --------------------------------------------------------------------------- widget gọn ----
 def render_compact(five, seven, scale=1.0, light=False):
-    """Widget gọn trên taskbar: nền trong suốt (alpha=1 để vẫn bấm được), màu sắc tự thích ứng theo theme."""
+    """Widget gọn trên taskbar: nền trong suốt (alpha=1 để vẫn bấm được), màu sắc thích ứng theme."""
     th = LIGHT_THEME if light else DARK_THEME
     p = _Painter(CW, CH, scale, SS_COMPACT)
-    # font semibold để nét chữ nhỏ không bị quá mảnh hay mờ trên nền taskbar trong suốt
-    f_label = _font(11.5 * p.u, "semibold")
-    f_pct = _font(17.5 * p.u, "semibold")
+    # font: nhãn bé 8.8px màu dịu, chỉ số quan trọng to 13.5px semibold nổi bật
+    f_label = _font(8.8 * p.u, "regular")
+    f_pct = _font(13.5 * p.u, "semibold")
     lv5, lv7 = _level(five), _level(seven)
 
-    p.sparkle(20, 23, 11, th["spark"])
-    p.sparkle(30.5, 11.5, 4.2, th["spark"])
-    p.calendar(126, 13, 19, th["cal_danger"] if lv7 == "danger" else th["cal_ok"])
+    # Icon lấp lánh (Sparkle)
+    p.sparkle(16, 21, 8.5, th["spark"])
+    p.sparkle(24.5, 12, 3.2, th["spark"])
 
+    # Icon lịch (Calendar)
+    p.calendar(110, 13, 14.5, th["cal_danger"] if lv7 == "danger" else th["cal_ok"])
+
+    bar_w = 48
     def column(x0, name, val, level, grad):
         dim = val is None
-        p.text(x0, 14.5, name, f_label, th["label"], alpha=190 if dim else 255)
-        p.text(x0, 31, _pct_text(val), f_pct, th["ink"], alpha=150 if dim else 255)
-        p.rrect(x0, 35.5, x0 + 62, 39.5, 2, th["track"], alpha=th["track_a"])
+        # Nhãn "Session", "Week": font bé 8.8px, màu muted để không làm mất tập trung
+        p.text(x0, 14.0, name, f_label, th["label"], alpha=170 if dim else 210)
+        c1, c2 = _bar_colors(level, grad, th)
+        val_col = c1 if level != "none" else th["ink"]
+        # Chỉ số "0%", "100%": font to 13.5px, màu theo mức độ
+        p.text(x0, 27.5, _pct_text(val), f_pct, val_col, alpha=150 if dim else 255)
+        p.rrect(x0, 31.5, x0 + bar_w, 34.5, 1.5, th["track"], alpha=th["track_a"])
         if not dim:
-            fw = max(4.0, 62 * min(1.0, val / 100.0))
-            c1, c2 = _bar_colors(level, grad, th)
-            p.rrect(x0, 35.5, x0 + fw, 39.5, 2, c1, gradient=(c1, c2))
+            fw = max(3.0, bar_w * min(1.0, val / 100.0))
+            p.rrect(x0, 31.5, x0 + fw, 34.5, 1.5, c1, gradient=(c1, c2))
 
-    column(44, "Session", five, lv5, th["bar_session"])
-    column(154, "Week", seven, lv7, th["bar_week"])
+    column(34, "Session", five, lv5, th["bar_session"])
+    column(130, "Week", seven, lv7, th["bar_week"])
 
-    p.line([(116, 9), (116, 35)], th["divider"], 1, alpha=th["divider_a"])
-    p.chevron(242, 23, th["chevron"], "down", 4.5, 1.5)
+    # Vách ngăn phân cách giữa 2 cột
+    p.line([(100, 10), (100, 30)], th["divider"], 1, alpha=th["divider_a"])
+    # Mũi tên mở panel ở góc phải
+    p.chevron(CW - 14, 21, th["chevron"], "down", 3.8, 1.2)
 
     img = p.finish()
     img.putalpha(img.getchannel("A").point(lambda v: v if v else 1))  # alpha=1: bấm được, vẫn vô hình
@@ -352,99 +188,81 @@ def render_compact(five, seven, scale=1.0, light=False):
 # ------------------------------------------------------------------------------- panel mở ----
 def render_flyout(info, scale=1.0, show_abs=False, light=False):
     """
-    Panel mở rộng. Trả về (ảnh RGBA, rects) với rects = {tên: (x0, y0, x1, y1)} theo px thật.
-    Tự động vẽ theo giao diện sáng/tối đồng bộ với hệ thống.
+    Panel mở rộng chi tiết Claude Usage theo chuẩn UI Kit đồng bộ.
     """
-    from PIL import Image, ImageFilter, ImageDraw
-
     th = LIGHT_THEME if light else DARK_THEME
     five, seven = info.get("five"), info.get("seven")
     p = _Painter(FW, FH, scale, SS_FLYOUT, margin=FM)
     u = p.u
 
-    # bóng đổ mềm phía sau panel
-    sh = Image.new("L", (p.W, p.H), 0)
-    ImageDraw.Draw(sh).rounded_rectangle(
-        [FM * u, (FM + 4) * u, (FM + FW) * u, (FM + FH + 4) * u],
-        radius=12 * u, fill=th["panel_shadow_fill"])
-    sh = sh.filter(ImageFilter.GaussianBlur(7 * u))
-    shadow = Image.new("RGBA", (p.W, p.H), (0, 0, 0, 255))
-    shadow.putalpha(sh)
-    p.img = Image.alpha_composite(p.img, shadow)
+    # 1. Khung panel Acrylic + Bóng đổ Gaussian
+    ui.draw_panel_shell(p, th, FW, FH)
 
-    # thân panel: kính tối hoặc kính sáng tuỳ theme
-    p.rrect(0, 0, FW, FH, 12, th["panel_fill"], alpha=th["panel_alpha"])
-    p.ring(0.5, 0.5, FW - 0.5, FH - 0.5, 12, th["panel_border"], 1, alpha=th["panel_border_a"])
+    # Phông chữ đồng bộ theo UI Kit
+    f_title = p.get_font("panel_title", "semibold")
+    f_sub = p.get_font("panel_sub", "regular")
+    f_blk = p.get_font("block_title", "semibold")
+    f_big = p.get_font("metric_hero", "semibold")
+    f_unit = p.get_font("metric_unit", "regular")
+    f_detail = p.get_font("metric_detail", "regular")
 
-    f_title, f_sub = _font(15 * u, "semibold"), _font(12 * u)
-    f_blk, f_big, f_unit = _font(14.5 * u, "semibold"), _font(27 * u, "semibold"), _font(15 * u)
-    f_rst, f_row = _font(12.5 * u), _font(14.5 * u, "semibold")
     pad = 16
-    sep = lambda y: p.line([(0, y), (FW, y)], th["divider"], 1, alpha=th["divider_a"])
+    sep = lambda y: p.line([(0, y), (FW, y)], th["divider"], 1.0, alpha=th["divider_a"])
 
-    # ---- đầu đề: bấm để mở trang usage ----
-    p.sparkle(30, 32, 11, th["spark_panel"])
-    p.sparkle(40, 21, 4.2, th["spark_panel"])
-    p.text(56, 29, "Chi tiết sử dụng token", f_title, th["ink"])
-    p.text(56, 48, "Xem đầy đủ thông tin", f_sub, th["panel_muted"])
-    p.chevron(FW - 24, 33, th["panel_muted"], "right", 5, 1.5)
-    sep(65)
+    # ---- 1. Header (Y: 0 -> 60) ----
+    p.sparkle(28, 29, 10, th["spark_panel"])
+    p.sparkle(38, 19, 3.8, th["spark_panel"])
+    p.text(54, 27, "Chi tiết sử dụng token", f_title, th["ink"])
+    p.text(54, 46, "Xem đầy đủ thông tin trên claude.ai", f_sub, th["panel_muted"])
+    p.chevron(FW - 22, 30, th["panel_muted"], "right", 5, 1.5)
+    sep(60)
 
+    # ---- 2. Các khối thông số (Blocks) ----
     def block(top, title, val, rel, absolute, grad):
         lv = _level(val)
-        p.text(pad, top + 26, title, f_blk, th["ink"])
+        # Tiêu đề nhóm: dùng màu nhãn dịu th["label"]
+        p.text(pad, top + 22, title, f_blk, th["label"])
         big = _pct_text(val)
-        p.text(pad, top + 58, big, f_big, th["ink"], alpha=140 if val is None else 255)
-        p.text(pad + p.text_width(big, f_big) + 6, top + 58, "đã sử dụng", f_unit, th["label"])
-        w = FW - 2 * pad
-        p.rrect(pad, top + 69, pad + w, top + 74, 2.5, th["track"], alpha=th["track_a"])
+        c1, c2 = _bar_colors(lv, grad, th)
+        val_col = c1 if val is not None else th["panel_muted"]
+        # Chỉ số quan trọng: Size to 23px, tô màu theo mức độ để nổi bật
+        p.text(pad, top + 50, big, f_big, val_col)
+        p.text(pad + p.text_width(big, f_big) + 8, top + 49, "đã sử dụng", f_unit, th["panel_muted"])
+        w_bar = FW - 2 * pad
+        p.rrect(pad, top + 59, pad + w_bar, top + 65, 3.0, th["track"], alpha=th["track_a"])
         if val is not None:
-            c1, c2 = _bar_colors(lv, grad, th)
-            p.rrect(pad, top + 69, pad + max(5.0, w * min(1.0, val / 100.0)), top + 74, 2.5,
+            p.rrect(pad, top + 59, pad + max(6.0, w_bar * min(1.0, val / 100.0)), top + 65, 3.0,
                     c1, gradient=(c1, c2))
-        text = ((("Đặt lại " + absolute) if show_abs and absolute else rel)
-                or ("Chưa có dữ liệu · Cài đặt › Đăng nhập" if val is None else "—"))
-        p.text(pad, top + 96, text, f_rst, th["panel_muted"])
+        text = (((("Đặt lại " + absolute) if show_abs and absolute else rel)
+                or ("Chưa có dữ liệu · Cài đặt › Đăng nhập" if val is None else "—")))
+        p.text(pad, top + 80, text, f_detail, th["panel_muted"])
 
-    block(66, "Phiên hiện tại", five, info.get("five_long"), info.get("five_abs"), th["bar_session"])
-    sep(174)
-    block(175, "Giới hạn tuần", seven, info.get("seven_long"), info.get("seven_abs"), th["bar_week"])
-    sep(283)
+    block(60, "Phiên hiện tại (5 giờ)", five, info.get("five_long"), info.get("five_abs"), th["bar_session"])
+    sep(148)
+    block(148, "Giới hạn tuần (7 ngày)", seven, info.get("seven_long"), info.get("seven_abs"), th["bar_week"])
+    sep(236)
 
-    # ---- hàng hành động ----
-    p.refresh_icon(pad + 11, 303, 7.5, th["ink"])
-    p.text(56, 308, "Làm mới ngay", f_row, th["ink"])
-    p.gear(pad + 11, 343, 8.5, th["ink"])
-    p.text(56, 348, "Cài đặt", f_row, th["ink"])
+    # ---- 3. Hàng hành động (Actions, Y: 244 -> 352) ----
+    actions = [
+        {"key": "refresh", "label": "Làm mới ngay", "icon_fn": lambda cx, cy, col: p.refresh_icon(cx, cy, 6.8, col)},
+        {"key": "update", "label": "Cập nhật từ GitHub…", "icon_fn": lambda cx, cy, col: p.download_icon(cx, cy, 14, col)},
+        {"key": "settings", "label": "Cài đặt & Tùy chọn…", "icon_fn": lambda cx, cy, col: p.gear_icon(cx, cy, 7.8, col)},
+    ]
+    raw_rects = ui.draw_action_rows(p, th, start_y=244, actions=actions, fw=FW, pad=pad)
+
+    raw_rects["header"] = (0, 0, FW, 60)
+    raw_rects["reset_five"] = (pad, 60 + 64, FW - pad, 60 + 84)
+    raw_rects["reset_seven"] = (pad, 148 + 64, FW - pad, 148 + 84)
 
     img = p.finish()
 
     s = scale
-    rects = {
-        "header": (0, 0, FW, 65),
-        "reset_five": (pad, 66 + 82, FW - pad, 66 + 104),
-        "reset_seven": (pad, 175 + 82, FW - pad, 175 + 104),
-        "refresh": (0, 284, FW, 324),
-        "settings": (0, 324, FW, 364),
-    }
-    # panel nằm lệch FM so với góc ảnh (chừa chỗ cho bóng đổ) -> dời toạ độ rồi đổi sang px thật
-    rects = {k: tuple(round((v + FM) * s) for v in r) for k, r in rects.items()}
-
-    return img, rects
+    scaled_rects = {k: tuple(round((v + FM) * s) for v in r) for k, r in raw_rects.items()}
+    return img, scaled_rects
 
 
 def apply_hover(img, rects, hover, scale=1.0, light=False):
-    """Tô sáng hàng đang rê chuột lên một bản sao ảnh nền (rẻ hơn nhiều so với vẽ lại cả panel)."""
-    from PIL import Image, ImageDraw
-    if hover not in ("header", "refresh", "settings"):
-        return img
-    x0, y0, x1, y1 = rects[hover]
-    inset = round(6 * scale)
-    hl = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    fill = (0, 0, 0, 18) if light else (255, 255, 255, 24)
-    ImageDraw.Draw(hl).rounded_rectangle([x0 + inset, y0 + round(2 * scale), x1 - inset, y1 - round(2 * scale)],
-                                         radius=round(7 * scale), fill=fill)
-    return Image.alpha_composite(img, hl)
+    return ui.apply_hover_highlight(img, rects, hover, scale=scale, is_dark=not light)
 
 
 # ----------------------------------------------------------------- cửa sổ nhiều lớp (Win32) ----
@@ -958,7 +776,7 @@ class Widget:
 
         def fly_motion(e):
             n = hit(e.x, e.y)
-            set_hover(n if n in ("header", "refresh", "settings") else None)
+            set_hover(n if n in ("header", "refresh", "update", "settings") else None)
 
         def move_to_target():
             x, y = target_pos()
@@ -986,7 +804,7 @@ class Widget:
                 self._cb["anchor"](new)
 
         def add_anchor_menu(m):
-            sub = tk.Menu(m, tearoff=0)
+            sub = tk.Menu(m, tearoff=0, font=MENU_FONT)
             var = tk.StringVar(master=root, value=self._anchor)
             m._anchor_var = var  # giữ tham chiếu kẻo biến bị thu hồi khi menu còn mở
             for key, label in ANCHORS:
@@ -995,7 +813,7 @@ class Widget:
             m.add_cascade(label="Điểm neo", menu=sub)
 
         def settings_menu(x_root, y_root):
-            m = tk.Menu(root, tearoff=0)
+            m = tk.Menu(root, tearoff=0, font=MENU_FONT)
 
             def later(name):  # đóng panel rồi chạy việc (việc nặng do app tự đưa sang thread khác)
                 return lambda: (close_flyout(), self._call(name))
@@ -1004,14 +822,28 @@ class Widget:
             m.add_command(label="Nhập sessionKey…", command=later("session_key"))
             m.add_separator()
             add_anchor_menu(m)
+            m.add_command(label="Cập nhật từ GitHub…",
+                          command=lambda: (close_flyout(), ui.show_update_dialog(root, "token", "Claude Usage Bar", os.path.dirname(os.path.abspath(__file__)))))
             if self._cb.get("autostart_status") and self._cb.get("autostart_toggle"):
                 lbl = "Khởi động cùng Windows" if sys.platform == "win32" else "Khởi động cùng hệ thống"
                 auto_var = tk.BooleanVar(master=root, value=bool(self._cb["autostart_status"]()))
                 m._auto_var = auto_var
                 m.add_checkbutton(label=lbl, variable=auto_var,
                                   command=lambda: (close_flyout(), self._call("autostart_toggle")))
+            def on_menu_quit():
+                close_flyout()
+                try:
+                    root.withdraw()
+                except Exception:
+                    pass
+                try:
+                    root.quit()
+                except Exception:
+                    pass
+                self._call("quit")
+
             m.add_command(label="Ẩn widget", command=lambda: (close_flyout(), hide_cmd()))
-            m.add_command(label="Thoát", command=later("quit"))
+            m.add_command(label="Thoát", command=on_menu_quit)
             show_menu(m, x_root, y_root)
 
         def fly_click(e):
@@ -1024,6 +856,9 @@ class Widget:
                 fly_refresh_image()
             elif n == "refresh":
                 self._call("refresh")
+            elif n == "update":
+                close_flyout()
+                ui.show_update_dialog(root, "token", "Claude Usage Bar", os.path.dirname(os.path.abspath(__file__)))
             elif n == "settings":
                 settings_menu(e.x_root, e.y_root)
 
@@ -1096,9 +931,11 @@ class Widget:
             drag.clear()
 
         def popup_small(e):
-            m = tk.Menu(root, tearoff=0)
+            m = tk.Menu(root, tearoff=0, font=MENU_FONT)
             if self._cb.get("refresh"):
                 m.add_command(label="Làm mới ngay", command=lambda: self._call("refresh"))
+            m.add_command(label="Cập nhật từ GitHub…",
+                          command=lambda: (close_flyout(), ui.show_update_dialog(root, "token", "Claude Usage Bar", os.path.dirname(os.path.abspath(__file__)))))
             add_anchor_menu(m)
             if self._cb.get("autostart_status") and self._cb.get("autostart_toggle"):
                 lbl = "Khởi động cùng Windows" if sys.platform == "win32" else "Khởi động cùng hệ thống"
