@@ -189,7 +189,7 @@ def render_compact(five, seven, scale=1.0, light=False):
 
 
 # ------------------------------------------------------------------------------- panel mở ----
-def render_flyout(info, scale=1.0, show_abs=False, light=False):
+def render_flyout(info, scale=1.0, show_abs=False, light=False, has_new_version=False, remote_ver=None):
     """
     Panel mở rộng chi tiết Claude Usage theo chuẩn UI Kit đồng bộ.
     """
@@ -216,7 +216,10 @@ def render_flyout(info, scale=1.0, show_abs=False, light=False):
     p.sparkle(28, 29, 10, th["spark_panel"])
     p.sparkle(38, 19, 3.8, th["spark_panel"])
     p.text(54, 27, "Chi tiết sử dụng token", f_title, th["ink"])
-    p.text(54, 46, f"Xem đầy đủ thông tin · v{WIDGET_VERSION}", f_sub, th["panel_muted"])
+    sub_title = f"Xem đầy đủ thông tin · v{WIDGET_VERSION}"
+    if has_new_version and remote_ver:
+        sub_title += f" (Có bản mới: v{remote_ver})"
+    p.text(54, 46, sub_title, f_sub, th["panel_muted"])
     p.chevron(FW - 22, 30, th["panel_muted"], "right", 5, 1.5)
     sep(60)
 
@@ -246,9 +249,10 @@ def render_flyout(info, scale=1.0, show_abs=False, light=False):
     sep(236)
 
     # ---- 3. Hàng hành động (Actions, Y: 244 -> 352) ----
+    up_label = f"Kiểm tra cập nhật (Có bản mới v{remote_ver}!)" if (has_new_version and remote_ver) else "Kiểm tra cập nhật…"
     actions = [
         {"key": "refresh", "label": "Làm mới ngay", "icon_fn": lambda cx, cy, col: p.refresh_icon(cx, cy, 6.8, col)},
-        {"key": "update", "label": f"Cập nhật từ GitHub (v{WIDGET_VERSION})…", "icon_fn": lambda cx, cy, col: p.download_icon(cx, cy, 14, col)},
+        {"key": "update", "label": up_label, "icon_fn": lambda cx, cy, col: p.download_icon(cx, cy, 14, (245, 158, 11) if has_new_version else col)},
         {"key": "settings", "label": "Cài đặt & Tùy chọn…", "icon_fn": lambda cx, cy, col: p.gear_icon(cx, cy, 7.8, col)},
     ]
     raw_rects = ui.draw_action_rows(p, th, start_y=244, actions=actions, fw=FW, pad=pad)
@@ -590,6 +594,15 @@ class Widget:
         self._wanted = False
         self._shown = False
         self._last_fs = None
+        self._has_new_version = False
+        self._remote_version = None
+
+        # Fetch repo 1 lần khi khởi chạy để kiểm tra phiên bản mới ngầm
+        ui.check_update_on_startup("claude", WIDGET_DIR, callback=self._on_update_result)
+
+    def _on_update_result(self, has_update, remote_ver=None):
+        if self._thread:
+            self._q.put(("update_status", (has_update, remote_ver)))
 
     # ---- gọi được từ thread bất kỳ ---------------------------------------------------
     def show(self):
@@ -706,7 +719,10 @@ class Widget:
             """Ảnh panel hiện tại. rebuild=False: dùng lại ảnh nền đã vẽ, chỉ đổi lớp tô sáng hover."""
             is_light = current_theme["light"]
             if rebuild or fly["base"] is None or fly.get("light") != is_light:
-                fly["base"], fly["rects"] = render_flyout(self._info, scale, self._show_abs, light=is_light)
+                fly["base"], fly["rects"] = render_flyout(
+                    self._info, scale, self._show_abs, light=is_light,
+                    has_new_version=self._has_new_version, remote_ver=self._remote_version
+                )
                 fly["light"] = is_light
             return apply_hover(fly["base"], fly["rects"], fly["hover"], scale, light=is_light)
 
@@ -825,7 +841,8 @@ class Widget:
             m.add_command(label="Nhập sessionKey…", command=later("session_key"))
             m.add_separator()
             add_anchor_menu(m)
-            m.add_command(label=f"Cập nhật từ GitHub (v{WIDGET_VERSION})…",
+            up_label = f"Kiểm tra cập nhật (Có bản mới: v{self._remote_version})…" if self._has_new_version else "Kiểm tra cập nhật…"
+            m.add_command(label=up_label,
                           command=lambda: (close_flyout(), ui.show_update_dialog(root, "claude", "Claude Usage Bar", WIDGET_DIR)))
             if self._cb.get("autostart_status") and self._cb.get("autostart_toggle"):
                 lbl = "Khởi động cùng Windows" if sys.platform == "win32" else "Khởi động cùng hệ thống"
@@ -937,7 +954,8 @@ class Widget:
             m = tk.Menu(root, tearoff=0, font=MENU_FONT)
             if self._cb.get("refresh"):
                 m.add_command(label="Làm mới ngay", command=lambda: self._call("refresh"))
-            m.add_command(label=f"Cập nhật từ GitHub (v{WIDGET_VERSION})…",
+            up_label = f"Kiểm tra cập nhật (Có bản mới: v{self._remote_version})…" if self._has_new_version else "Kiểm tra cập nhật…"
+            m.add_command(label=up_label,
                           command=lambda: (close_flyout(), ui.show_update_dialog(root, "claude", "Claude Usage Bar", WIDGET_DIR)))
             add_anchor_menu(m)
             if self._cb.get("autostart_status") and self._cb.get("autostart_toggle"):
@@ -980,6 +998,11 @@ class Widget:
                         self._wanted = False
                     elif cmd == "info":
                         redraw = True
+                    elif cmd == "update_status":
+                        has_up, r_ver = arg
+                        self._has_new_version = has_up
+                        self._remote_version = r_ver
+                        fly_refresh_image()
                     elif cmd == "anchor":
                         apply_anchor(arg, notify=False)
                     elif cmd == "stop":

@@ -1153,6 +1153,118 @@ def fetch_remote_info(github_url: str, branch: str = "main") -> Tuple[bool, Opti
     return False, None, None, f"Không tìm thấy repository trên GitHub ({owner}/{repo}). Repo có thể là Private hoặc chưa push lên."
 
 
+# =============================================================================
+# 7.1. QUẢN LÝ KIỂM TRA PHIÊN BẢN NGẦM (BACKGROUND UPDATE CHECKER)
+# =============================================================================
+
+class UpdateChecker:
+    """
+    Quản lý kiểm tra phiên bản mới ngầm trên GitHub khi khởi chạy widget:
+    - Chạy fetch repo 1 lần không đồng bộ (thread daemon).
+    - Lưu trạng thái: checked, has_update, remote_ver, local_ver, msg.
+    - Cung cấp callback thông báo khi có kết quả.
+    """
+    _instances = {}
+
+    @classmethod
+    def get_instance(cls, widget_id: str, widget_dir: str):
+        key = (widget_id, os.path.abspath(widget_dir))
+        if key not in cls._instances:
+            cls._instances[key] = cls(widget_id, widget_dir)
+        return cls._instances[key]
+
+    def __init__(self, widget_id: str, widget_dir: str):
+        self.widget_id = widget_id
+        self.widget_dir = widget_dir
+        self.local_ver = get_local_version(widget_dir)
+        self.has_update = False
+        self.remote_ver = None
+        self.checked = False
+        self.msg = ""
+        self._listeners = []
+        self._lock = threading.Lock()
+        self._running = False
+
+    def add_listener(self, fn: Callable[[bool, Optional[str]], None]):
+        with self._lock:
+            self._listeners.append(fn)
+            already_done = self.checked
+            has_up = self.has_update
+            rem_v = self.remote_ver
+        if already_done:
+            try:
+                fn(has_up, rem_v)
+            except Exception:
+                pass
+
+    def start_check(self, github_url: Optional[str] = None):
+        """Khởi chạy ngầm fetch repo 1 lần để kiểm tra phiên bản mới."""
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+
+        def _worker():
+            url = github_url
+            if not url:
+                manifest_p = os.path.join(self.widget_dir, "widget.json")
+                if os.path.isfile(manifest_p):
+                    try:
+                        with open(manifest_p, "r", encoding="utf-8-sig") as f:
+                            url = json.load(f).get("github_url")
+                    except Exception:
+                        pass
+            if not url:
+                defaults = {
+                    "claude": "https://github.com/Code4Fun-Free/claude-usage-bar",
+                    "token": "https://github.com/Code4Fun-Free/claude-usage-bar",
+                    "gpu": "https://github.com/Code4Fun-Free/gpu-usage-bar",
+                    "network": "https://github.com/Code4Fun-Free/network-meter-bar",
+                }
+                url = defaults.get(self.widget_id, "https://github.com/Code4Fun-Free/widget-manager")
+
+            ok, rem_ver, meta, msg = fetch_remote_info(url)
+            with self._lock:
+                self.checked = True
+                self._running = False
+                self.remote_ver = rem_ver
+                self.msg = msg
+                if ok and rem_ver:
+                    cmp = compare_versions(self.local_ver, rem_ver)
+                    self.has_update = (cmp == 1)
+                else:
+                    self.has_update = False
+                callbacks = list(self._listeners)
+
+            for cb in callbacks:
+                try:
+                    cb(self.has_update, self.remote_ver)
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_worker, daemon=True, name=f"UpdateChecker-{self.widget_id}")
+        t.start()
+        return t
+
+
+def check_update_on_startup(widget_id: str, widget_dir: str, callback: Optional[Callable[[bool, Optional[str]], None]] = None) -> UpdateChecker:
+    """
+    Hàm tiện ích gọi mỗi lần khởi chạy widget để fetch repo 1 lần kiểm tra phiên bản mới.
+    """
+    checker = UpdateChecker.get_instance(widget_id, widget_dir)
+    if callback:
+        checker.add_listener(callback)
+    if not checker.checked and not checker._running:
+        checker.start_check()
+    return checker
+
+
+def get_update_status(widget_id: str, widget_dir: str) -> Tuple[bool, Optional[str]]:
+    """Trả về (has_update, remote_ver) từ cache của UpdateChecker."""
+    checker = UpdateChecker.get_instance(widget_id, widget_dir)
+    return checker.has_update, checker.remote_ver
+
+
 def download_and_extract_github_zip(github_url: str, target_dir: str, branch: str = "main",
                                     callback: Optional[Callable[[str, str], None]] = None) -> Tuple[bool, str]:
     """
@@ -1396,7 +1508,7 @@ def show_update_dialog(parent_root, widget_id: str, widget_name: str, widget_dir
             win = tk.Tk()
     except Exception:
         win = tk.Tk()
-    win.title(f"Cập Nhật — {widget_name}")
+    win.title(f"Kiểm Tra Cập Nhật — {widget_name}")
     win.geometry("560x440")
     win.minsize(520, 420)
     win.configure(bg=HEX_BG_SURFACE)
@@ -1415,9 +1527,9 @@ def show_update_dialog(parent_root, widget_id: str, widget_name: str, widget_dir
 
     t_box = tk.Frame(hdr, bg=HEX_BG_SURFACE)
     t_box.pack(side="left")
-    tk.Label(t_box, text=f"🔄 Cập Nhật {widget_name}", font=("Segoe UI", 12, "bold"),
+    tk.Label(t_box, text=f"🔄 Kiểm Tra Cập Nhật {widget_name}", font=("Segoe UI", 12, "bold"),
              bg=HEX_BG_SURFACE, fg=HEX_TEXT_MAIN).pack(anchor="w")
-    tk.Label(t_box, text="Quản lý phiên bản và nâng cấp widget trực tiếp từ GitHub qua HTTP",
+    tk.Label(t_box, text="Tự động kiểm tra phiên bản và nâng cấp widget trực tiếp từ GitHub qua HTTP",
              font=("Segoe UI", 8), bg=HEX_BG_SURFACE, fg=HEX_TEXT_MUTED).pack(anchor="w", pady=(2, 0))
 
     # Khung Thẻ Quản Lý Phiên Bản (Version Card)
@@ -1644,7 +1756,12 @@ def show_update_dialog(parent_root, widget_id: str, widget_name: str, widget_dir
     # Bắt đầu vòng lặp đọc hàng đợi giao diện an toàn
     win.after(50, poll_ui_queue)
 
-    # Kích hoạt kiểm tra phiên bản ngầm ngay khi mở hộp thoại
+    # Nếu UpdateChecker đã kiểm tra trước đó, nạp ngay dữ liệu để hiển thị tức thì
+    cached_checker = UpdateChecker.get_instance(widget_id, widget_dir)
+    if cached_checker.checked and cached_checker.remote_ver:
+        update_version_ui(True, cached_checker.remote_ver, cached_checker.msg)
+
+    # Kích hoạt kiểm tra phiên bản mới nhất từ GitHub
     trigger_version_check()
 
     if isinstance(win, tk.Tk):
