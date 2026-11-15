@@ -27,6 +27,9 @@ import webbrowser
 
 import ui_kit as ui
 
+WIDGET_DIR = os.path.dirname(os.path.abspath(__file__))
+WIDGET_VERSION = ui.get_local_version(WIDGET_DIR)
+
 USAGE_URL = "https://claude.ai/settings/usage"
 
 # ----------------------------------------------------------------------------- kích thước ----
@@ -213,7 +216,7 @@ def render_flyout(info, scale=1.0, show_abs=False, light=False):
     p.sparkle(28, 29, 10, th["spark_panel"])
     p.sparkle(38, 19, 3.8, th["spark_panel"])
     p.text(54, 27, "Chi tiết sử dụng token", f_title, th["ink"])
-    p.text(54, 46, "Xem đầy đủ thông tin trên claude.ai", f_sub, th["panel_muted"])
+    p.text(54, 46, f"Xem đầy đủ thông tin · v{WIDGET_VERSION}", f_sub, th["panel_muted"])
     p.chevron(FW - 22, 30, th["panel_muted"], "right", 5, 1.5)
     sep(60)
 
@@ -245,7 +248,7 @@ def render_flyout(info, scale=1.0, show_abs=False, light=False):
     # ---- 3. Hàng hành động (Actions, Y: 244 -> 352) ----
     actions = [
         {"key": "refresh", "label": "Làm mới ngay", "icon_fn": lambda cx, cy, col: p.refresh_icon(cx, cy, 6.8, col)},
-        {"key": "update", "label": "Cập nhật từ GitHub…", "icon_fn": lambda cx, cy, col: p.download_icon(cx, cy, 14, col)},
+        {"key": "update", "label": f"Cập nhật từ GitHub (v{WIDGET_VERSION})…", "icon_fn": lambda cx, cy, col: p.download_icon(cx, cy, 14, col)},
         {"key": "settings", "label": "Cài đặt & Tùy chọn…", "icon_fn": lambda cx, cy, col: p.gear_icon(cx, cy, 7.8, col)},
     ]
     raw_rects = ui.draw_action_rows(p, th, start_y=244, actions=actions, fw=FW, pad=pad)
@@ -822,8 +825,8 @@ class Widget:
             m.add_command(label="Nhập sessionKey…", command=later("session_key"))
             m.add_separator()
             add_anchor_menu(m)
-            m.add_command(label="Cập nhật từ GitHub…",
-                          command=lambda: (close_flyout(), ui.show_update_dialog(root, "token", "Claude Usage Bar", os.path.dirname(os.path.abspath(__file__)))))
+            m.add_command(label=f"Cập nhật từ GitHub (v{WIDGET_VERSION})…",
+                          command=lambda: (close_flyout(), ui.show_update_dialog(root, "claude", "Claude Usage Bar", WIDGET_DIR)))
             if self._cb.get("autostart_status") and self._cb.get("autostart_toggle"):
                 lbl = "Khởi động cùng Windows" if sys.platform == "win32" else "Khởi động cùng hệ thống"
                 auto_var = tk.BooleanVar(master=root, value=bool(self._cb["autostart_status"]()))
@@ -858,7 +861,7 @@ class Widget:
                 self._call("refresh")
             elif n == "update":
                 close_flyout()
-                ui.show_update_dialog(root, "token", "Claude Usage Bar", os.path.dirname(os.path.abspath(__file__)))
+                ui.show_update_dialog(root, "claude", "Claude Usage Bar", WIDGET_DIR)
             elif n == "settings":
                 settings_menu(e.x_root, e.y_root)
 
@@ -934,8 +937,8 @@ class Widget:
             m = tk.Menu(root, tearoff=0, font=MENU_FONT)
             if self._cb.get("refresh"):
                 m.add_command(label="Làm mới ngay", command=lambda: self._call("refresh"))
-            m.add_command(label="Cập nhật từ GitHub…",
-                          command=lambda: (close_flyout(), ui.show_update_dialog(root, "token", "Claude Usage Bar", os.path.dirname(os.path.abspath(__file__)))))
+            m.add_command(label=f"Cập nhật từ GitHub (v{WIDGET_VERSION})…",
+                          command=lambda: (close_flyout(), ui.show_update_dialog(root, "claude", "Claude Usage Bar", WIDGET_DIR)))
             add_anchor_menu(m)
             if self._cb.get("autostart_status") and self._cb.get("autostart_toggle"):
                 lbl = "Khởi động cùng Windows" if sys.platform == "win32" else "Khởi động cùng hệ thống"
