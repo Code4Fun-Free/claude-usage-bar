@@ -1220,6 +1220,7 @@ class UpdateChecker:
                     "token": "https://github.com/Code4Fun-Free/claude-usage-bar",
                     "gpu": "https://github.com/Code4Fun-Free/gpu-usage-bar",
                     "network": "https://github.com/Code4Fun-Free/network-meter-bar",
+                    "power": "https://github.com/Code4Fun-Free/power-meter-bar",
                 }
                 url = defaults.get(self.widget_id, "https://github.com/Code4Fun-Free/widget-manager")
 
@@ -1496,6 +1497,7 @@ def show_update_dialog(parent_root, widget_id: str, widget_name: str, widget_dir
             "token": "https://github.com/Code4Fun-Free/claude-usage-bar",
             "gpu": "https://github.com/Code4Fun-Free/gpu-usage-bar",
             "network": "https://github.com/Code4Fun-Free/network-meter-bar",
+            "power": "https://github.com/Code4Fun-Free/power-meter-bar",
         }
         gh_url = defaults.get(widget_id, "https://github.com/Code4Fun-Free/widget-manager")
 
